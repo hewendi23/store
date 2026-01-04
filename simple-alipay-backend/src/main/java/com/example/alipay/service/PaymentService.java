@@ -1,16 +1,19 @@
 package com.example.alipay.service;
 
 import com.example.alipay.model.Payment;
+import com.example.alipay.model.UserAccount;
 import com.example.alipay.model.fintech.User;
 import com.example.alipay.model.fintech.UserStatus;
 import com.example.alipay.model.fintech.BankCard;
 import com.example.alipay.model.fintech.Bill;
 import com.example.alipay.repository.PaymentRepository;
+import com.example.alipay.repository.UserAccountRepository;
 import com.example.alipay.repository.fintech.UserRepository;
 import com.example.alipay.repository.fintech.BankCardRepository;
 import com.example.alipay.repository.fintech.BillRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -20,13 +23,22 @@ import java.util.Optional;
 public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final UserRepository userRepository;
+    private final UserAccountRepository userAccountRepository;
     private final BankCardRepository bankCardRepository;
     private final PasswordEncoder passwordEncoder;
     private final BillRepository billRepository;
 
-    public PaymentService(PaymentRepository paymentRepository, UserRepository userRepository, BankCardRepository bankCardRepository, PasswordEncoder passwordEncoder, BillRepository billRepository){
+    public PaymentService(
+            PaymentRepository paymentRepository,
+            UserRepository userRepository,
+            UserAccountRepository userAccountRepository,
+            BankCardRepository bankCardRepository,
+            PasswordEncoder passwordEncoder,
+            BillRepository billRepository
+    ){
         this.paymentRepository = paymentRepository;
         this.userRepository = userRepository;
+        this.userAccountRepository = userAccountRepository;
         this.bankCardRepository = bankCardRepository;
         this.passwordEncoder = passwordEncoder;
         this.billRepository = billRepository;
@@ -57,7 +69,11 @@ public class PaymentService {
         return null;
     }
 
+    @Transactional
     public Payment createAndExecutePayment(String fromUser, String toMerchant, BigDecimal amount, String paymentMethod, String paySource, Long payCardId, String receiveSource, Long receiveCardId){
+        String normalizedFromUser = normalizeUserKey(fromUser);
+        String normalizedToMerchant = normalizeUserKey(toMerchant);
+
         Payment p = new Payment();
         p.setFromUser(fromUser);
         p.setToMerchant(toMerchant);
@@ -69,13 +85,23 @@ public class PaymentService {
 
         boolean receiveOnly = (paySource == null || paySource.isBlank());
         if (receiveOnly) {
-            Optional<User> toOpt = userRepository.findByUsername(toMerchant);
-            if (toOpt.isPresent()) {
-                User to = toOpt.get();
+            Optional<User> toFintechOpt = userRepository.findByUsernameForUpdate(normalizedToMerchant);
+            Optional<UserAccount> toAccountOpt = toFintechOpt.isPresent()
+                    ? Optional.empty()
+                    : userAccountRepository.findByUsernameForUpdate(normalizedToMerchant);
+
+            if (toFintechOpt.isPresent()) {
+                User to = toFintechOpt.get();
                 to.setBalance(to.getBalance() == null ? amount : to.getBalance().add(amount));
                 userRepository.save(to);
                 p.setStatus("SUCCESS");
                 createBillIfNotExists(to.getId(), amount, "INCOME", "收款", "收款入账", "PAYMENT", "PAY:" + p.getId());
+            } else if (toAccountOpt.isPresent()) {
+                UserAccount to = toAccountOpt.get();
+                BigDecimal toBalance = to.getBalance() == null ? BigDecimal.ZERO : to.getBalance();
+                to.setBalance(toBalance.add(amount));
+                userAccountRepository.save(to);
+                p.setStatus("SUCCESS");
             } else {
                 p.setStatus("FAILED");
                 p.setErrorCode("RECEIVER_NOT_FOUND");
@@ -85,7 +111,7 @@ public class PaymentService {
             return p;
         }
 
-        Optional<User> fromOpt = userRepository.findByUsername(fromUser);
+        Optional<User> fromOpt = userRepository.findByUsernameForUpdate(normalizedFromUser);
         if (fromOpt.isEmpty()) {
             p.setStatus("FAILED");
             paymentRepository.save(p);
@@ -126,19 +152,27 @@ public class PaymentService {
         }
 
         if (!"FAILED".equals(p.getStatus())) {
-            Optional<User> toOpt = userRepository.findByUsername(toMerchant);
+            Optional<User> toFintechOpt = userRepository.findByUsernameForUpdate(normalizedToMerchant);
+            Optional<UserAccount> toAccountOpt = toFintechOpt.isPresent()
+                    ? Optional.empty()
+                    : userAccountRepository.findByUsernameForUpdate(normalizedToMerchant);
 
             if (deducted) {
-                createBillIfNotExists(from.getId(), amount, "EXPENDITURE", "支付", "支付给:" + toMerchant, "PAYMENT", "PAY:" + p.getId());
+                createBillIfNotExists(from.getId(), amount, "EXPENDITURE", "支付", "支付给:" + normalizedToMerchant, "PAYMENT", "PAY:" + p.getId());
             }
 
-            if (toOpt.isPresent()) {
-                User to = toOpt.get();
+            if (toFintechOpt.isPresent()) {
+                User to = toFintechOpt.get();
                 to.setBalance(to.getBalance() == null ? amount : to.getBalance().add(amount));
                 userRepository.save(to);
                 if (deducted) {
-                    createBillIfNotExists(to.getId(), amount, "INCOME", "收款", "来自:" + fromUser, "PAYMENT", "PAY:" + p.getId());
+                    createBillIfNotExists(to.getId(), amount, "INCOME", "收款", "来自:" + normalizedFromUser, "PAYMENT", "PAY:" + p.getId());
                 }
+            } else if (toAccountOpt.isPresent()) {
+                UserAccount to = toAccountOpt.get();
+                BigDecimal toBalance = to.getBalance() == null ? BigDecimal.ZERO : to.getBalance();
+                to.setBalance(toBalance.add(amount));
+                userAccountRepository.save(to);
             }
 
             p.setStatus(deducted ? "SUCCESS" : "FAILED");
@@ -146,6 +180,20 @@ public class PaymentService {
 
         paymentRepository.save(p);
         return p;
+    }
+
+    private String normalizeUserKey(String raw) {
+        if (raw == null) return null;
+        String v = raw.trim();
+        if (v.isEmpty()) return v;
+        if (v.startsWith("collect://")) {
+            v = v.substring("collect://".length());
+        }
+        int slash = v.indexOf('/');
+        if (slash > 0) {
+            return v.substring(0, slash);
+        }
+        return v;
     }
 
     private void createBillIfNotExists(Long userId, BigDecimal amount, String type, String category, String remark, String sourceType, String sourceRefId) {

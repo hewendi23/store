@@ -29,7 +29,9 @@ public class PaymentController {
         String payPassword = body.get("payPassword");
         BigDecimal amount = new BigDecimal(amtS);
 
-        if (from.equals(to)) {
+        String normalizedFrom = normalizeUserKey(from);
+        String normalizedTo = normalizeUserKey(to);
+        if (normalizedFrom.equals(normalizedTo)) {
             return ResponseEntity.status(422).body(Map.of("error", "BUSINESS_RULE"));
         }
         if ("balance".equalsIgnoreCase(paySource) || "card".equalsIgnoreCase(paySource)) {
@@ -56,5 +58,18 @@ public class PaymentController {
             }
         }
         return ResponseEntity.ok(p);
+    }
+
+    private String normalizeUserKey(String raw) {
+        if (raw == null) return "";
+        String v = raw.trim();
+        if (v.startsWith("collect://")) {
+            v = v.substring("collect://".length());
+        }
+        int slash = v.indexOf('/');
+        if (slash > 0) {
+            return v.substring(0, slash);
+        }
+        return v;
     }
 }

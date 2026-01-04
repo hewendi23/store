@@ -7,6 +7,7 @@ import com.example.alipay.repository.fintech.BankCardRepository;
 import com.example.alipay.repository.fintech.BillRepository;
 import com.example.alipay.repository.fintech.UserRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -52,9 +53,10 @@ public class AssetService {
         return bankCardRepository.findByUserId(userId);
     }
 
+    @Transactional
     public boolean transfer(Long fromUserId, Long toUserId, BigDecimal amount) {
-        Optional<User> fromUserOpt = userRepository.findById(fromUserId);
-        Optional<User> toUserOpt = userRepository.findById(toUserId);
+        Optional<User> fromUserOpt = userRepository.findByIdForUpdate(fromUserId);
+        Optional<User> toUserOpt = userRepository.findByIdForUpdate(toUserId);
 
         if (fromUserOpt.isEmpty() || toUserOpt.isEmpty()) {
             return false;
