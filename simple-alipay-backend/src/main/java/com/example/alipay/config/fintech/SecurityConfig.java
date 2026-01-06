@@ -5,6 +5,7 @@ import com.example.alipay.security.fintech.JwtAuthenticationFilter;
 import com.example.alipay.security.fintech.JwtUtil;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -58,6 +59,7 @@ public class SecurityConfig {
                 .requestMatchers("/error").permitAll()
                 .requestMatchers("/api/site/gates/*/entry").permitAll()
                 .requestMatchers("/api/site/gates/*/exit").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/site/stations/**").permitAll()
                 // Actuator 健康检查端点
                 .requestMatchers("/actuator/health").permitAll()
                 // 管理员API需要SUPER_ADMIN角色

@@ -143,6 +143,20 @@ public class StationManagementController {
         }
     }
 
+    @DeleteMapping("/gates/{gateId}")
+    public ResponseEntity<?> deleteGate(@PathVariable Long gateId) {
+        try {
+            boolean success = stationManagementService.deleteGate(gateId);
+            if (success) {
+                return ResponseEntity.ok(Map.of("message", "闸机已删除", "gateId", gateId));
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("error", "闸机不存在"));
+            }
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(409).body(Map.of("error", e.getMessage()));
+        }
+    }
+
     // 查询API
     @GetMapping("/stations/city/{city}")
     public ResponseEntity<?> getStationsByCity(@PathVariable String city) {

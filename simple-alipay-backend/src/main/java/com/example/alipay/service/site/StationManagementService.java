@@ -4,6 +4,7 @@ import com.example.alipay.model.site.Station;
 import com.example.alipay.model.site.Gate;
 import com.example.alipay.repository.site.StationRepository;
 import com.example.alipay.repository.site.GateRepository;
+import com.example.alipay.repository.site.GateEventRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -14,10 +15,12 @@ import java.util.Optional;
 public class StationManagementService {
     private final StationRepository stationRepository;
     private final GateRepository gateRepository;
+    private final GateEventRepository gateEventRepository;
 
-    public StationManagementService(StationRepository stationRepository, GateRepository gateRepository) {
+    public StationManagementService(StationRepository stationRepository, GateRepository gateRepository, GateEventRepository gateEventRepository) {
         this.stationRepository = stationRepository;
         this.gateRepository = gateRepository;
+        this.gateEventRepository = gateEventRepository;
     }
 
     // 站点管理方法
@@ -138,6 +141,19 @@ public class StationManagementService {
             return true;
         }
         return false;
+    }
+
+    public boolean deleteGate(Long gateId) {
+        Optional<Gate> gateOpt = gateRepository.findById(gateId);
+        if (gateOpt.isEmpty()) {
+            return false;
+        }
+        long related = gateEventRepository.countByGateId(gateId);
+        if (related > 0) {
+            throw new IllegalStateException("闸机存在关联事件，无法删除");
+        }
+        gateRepository.deleteById(gateId);
+        return true;
     }
 
     public List<Station> getStationsByCity(String city) {

@@ -1,16 +1,23 @@
 package com.example.alipay.service.site;
 
+import com.example.alipay.model.admin.DiscountPolicy;
+import com.example.alipay.model.TravelRecord;
 import com.example.alipay.model.site.Gate;
 import com.example.alipay.model.site.GateEvent;
+import com.example.alipay.model.site.Station;
 import com.example.alipay.model.fintech.User;
+import com.example.alipay.repository.admin.DiscountPolicyRepository;
+import com.example.alipay.repository.TravelRecordRepository;
 import com.example.alipay.repository.site.GateRepository;
 import com.example.alipay.repository.site.GateEventRepository;
+import com.example.alipay.repository.site.StationRepository;
 import com.example.alipay.repository.fintech.UserRepository;
 import com.example.alipay.model.fintech.Bill;
 import com.example.alipay.repository.fintech.BillRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -22,16 +29,30 @@ public class GateEventService {
     private final GateEventRepository gateEventRepository;
     private final UserRepository userRepository;
     private final BillRepository billRepository;
+    private final StationRepository stationRepository;
+    private final DiscountPolicyRepository discountPolicyRepository;
+    private final TravelRecordRepository travelRecordRepository;
 
-    public GateEventService(GateRepository gateRepository, GateEventRepository gateEventRepository, UserRepository userRepository, BillRepository billRepository) {
+    public GateEventService(
+            GateRepository gateRepository,
+            GateEventRepository gateEventRepository,
+            UserRepository userRepository,
+            BillRepository billRepository,
+            StationRepository stationRepository,
+            DiscountPolicyRepository discountPolicyRepository,
+            TravelRecordRepository travelRecordRepository
+    ) {
         this.gateRepository = gateRepository;
         this.gateEventRepository = gateEventRepository;
         this.userRepository = userRepository;
         this.billRepository = billRepository;
+        this.stationRepository = stationRepository;
+        this.discountPolicyRepository = discountPolicyRepository;
+        this.travelRecordRepository = travelRecordRepository;
     }
 
-    public GateEvent processEntry(String gateCode, String qrCode) {
-        Optional<Gate> gateOpt = gateRepository.findByGateCode(gateCode);
+    public GateEvent processEntry(String gateCode, String qrCode, Long stationId) {
+        Optional<Gate> gateOpt = resolveGateByCode(gateCode, stationId);
         if (gateOpt.isEmpty()) {
             return createErrorEvent(gateCode, qrCode, "GATE_NOT_FOUND", "闸机不存在");
         }
@@ -78,11 +99,16 @@ public class GateEventService {
         event.setTransactionId(generateTransactionId());
         event.setRemark("进站成功");
 
-        return gateEventRepository.save(event);
+        GateEvent saved = gateEventRepository.save(event);
+
+        Station entryStation = resolveStation(gate.getStationId()).orElse(null);
+        upsertEntryRecord(user.getUsername(), entryStation);
+
+        return saved;
     }
 
-    public GateEvent processExit(String gateCode, String qrCode) {
-        Optional<Gate> gateOpt = gateRepository.findByGateCode(gateCode);
+    public GateEvent processExit(String gateCode, String qrCode, Long stationId) {
+        Optional<Gate> gateOpt = resolveGateByCode(gateCode, stationId);
         if (gateOpt.isEmpty()) {
             return createErrorEvent(gateCode, qrCode, "GATE_NOT_FOUND", "闸机不存在");
         }
@@ -109,8 +135,65 @@ public class GateEventService {
             return createErrorEvent(gateCode, qrCode, "USER_DISABLED", "用户账户已禁用");
         }
 
-        // 计算费用 (简化逻辑，固定费用)
-        BigDecimal fare = new BigDecimal("3.00");
+        Optional<GateEvent> latestEntryOpt = gateEventRepository.findTopByUserIdAndEventTypeAndStatusOrderByEventTimeDesc(
+                user.getId(),
+                "ENTRY",
+                "SUCCESS"
+        );
+        if (latestEntryOpt.isEmpty()) {
+            return createErrorEvent(gateCode, qrCode, "NO_ENTRY_RECORD", "未找到进站记录");
+        }
+
+        Optional<GateEvent> latestExitOpt = gateEventRepository.findTopByUserIdAndEventTypeAndStatusOrderByEventTimeDesc(
+                user.getId(),
+                "EXIT",
+                "SUCCESS"
+        );
+        if (latestExitOpt.isPresent() && latestExitOpt.get().getEventTime() != null && latestEntryOpt.get().getEventTime() != null) {
+            if (latestExitOpt.get().getEventTime().isAfter(latestEntryOpt.get().getEventTime())) {
+                return createErrorEvent(gateCode, qrCode, "NO_ENTRY_RECORD", "未找到未出站的进站记录");
+            }
+        }
+
+        GateEvent latestEntry = latestEntryOpt.get();
+        Optional<Gate> entryGateOpt = latestEntry.getGateId() == null ? Optional.empty() : gateRepository.findById(latestEntry.getGateId());
+        if (entryGateOpt.isEmpty()) {
+            return createErrorEvent(gateCode, qrCode, "ENTRY_GATE_NOT_FOUND", "进站闸机不存在");
+        }
+
+        Gate entryGate = entryGateOpt.get();
+        Station entryStation = resolveStation(entryGate.getStationId()).orElse(null);
+        if (entryStation == null) {
+            return createErrorEvent(gateCode, qrCode, "ENTRY_STATION_NOT_FOUND", "进站站点不存在");
+        }
+        Station exitStation = resolveStation(gate.getStationId()).orElse(null);
+        if (exitStation == null) {
+            return createErrorEvent(gateCode, qrCode, "EXIT_STATION_NOT_FOUND", "出站站点不存在");
+        }
+
+        if (entryStation.getLine() == null || exitStation.getLine() == null || !entryStation.getLine().equals(exitStation.getLine())) {
+            return createErrorEvent(gateCode, qrCode, "CROSS_LINE_NOT_SUPPORTED", "暂不支持跨线路计费");
+        }
+
+        Integer entrySeq = parseStationSequence(entryStation.getLocation());
+        Integer exitSeq = parseStationSequence(exitStation.getLocation());
+        if (entrySeq == null || exitSeq == null) {
+            return createErrorEvent(gateCode, qrCode, "INVALID_STATION_SEQUENCE", "站点位置字段必须为数字顺序");
+        }
+
+        int stationCount = Math.abs(exitSeq - entrySeq);
+        BigDecimal perStationFare = new BigDecimal("3.00");
+        BigDecimal fare = perStationFare.multiply(new BigDecimal(stationCount));
+
+        Optional<DiscountPolicy> bestPolicyOpt = findBestPolicy(entryStation.getLine(), LocalDateTime.now());
+        if (bestPolicyOpt.isPresent()) {
+            BigDecimal rate = bestPolicyOpt.get().getDiscountRate();
+            if (rate != null) {
+                fare = fare.multiply(rate).setScale(2, RoundingMode.HALF_UP);
+            }
+        } else {
+            fare = fare.setScale(2, RoundingMode.HALF_UP);
+        }
         
         // 检查余额
         if (user.getBalance().compareTo(fare) < 0) {
@@ -150,7 +233,102 @@ public class GateEventService {
             billRepository.save(b);
         }
 
+        upsertExitRecord(user.getUsername(), entryStation, fare);
+
         return event;
+    }
+
+    private Optional<Gate> resolveGateByCode(String gateCode, Long stationId) {
+        if (gateCode == null || gateCode.isBlank()) return Optional.empty();
+
+        if (stationId != null) {
+            Optional<Gate> stationEnabled = gateRepository.findTopByStationIdAndGateCodeAndEnabledTrueOrderByUpdatedAtDesc(stationId, gateCode);
+            if (stationEnabled.isPresent()) return stationEnabled;
+            Optional<Gate> stationAny = gateRepository.findTopByStationIdAndGateCodeOrderByUpdatedAtDesc(stationId, gateCode);
+            if (stationAny.isPresent()) return stationAny;
+        }
+
+        Optional<Gate> enabled = gateRepository.findTopByGateCodeAndEnabledTrueOrderByUpdatedAtDesc(gateCode);
+        if (enabled.isPresent()) return enabled;
+
+        return gateRepository.findTopByGateCodeOrderByUpdatedAtDesc(gateCode);
+    }
+
+    private Optional<Station> resolveStation(Long stationId) {
+        if (stationId == null) return Optional.empty();
+        return stationRepository.findById(stationId);
+    }
+
+    private void upsertEntryRecord(String username, Station entryStation) {
+        if (username == null || username.isBlank()) return;
+        Optional<TravelRecord> existing = travelRecordRepository.findTopByUsernameAndStatusOrderByEntryTimeDesc(username, "IN_PROGRESS");
+        if (existing.isPresent()) return;
+
+        TravelRecord r = new TravelRecord();
+        r.setUsername(username);
+        if (entryStation != null) {
+            r.setCity(entryStation.getCity());
+            r.setLine(entryStation.getLine());
+        }
+        r.setEntryTime(LocalDateTime.now());
+        r.setStatus("IN_PROGRESS");
+        travelRecordRepository.save(r);
+    }
+
+    private void upsertExitRecord(String username, Station entryStation, BigDecimal fare) {
+        if (username == null || username.isBlank()) return;
+        Optional<TravelRecord> inProgress = travelRecordRepository.findTopByUsernameAndStatusOrderByEntryTimeDesc(username, "IN_PROGRESS");
+        TravelRecord r = inProgress.orElseGet(TravelRecord::new);
+
+        if (r.getUsername() == null) r.setUsername(username);
+        if (r.getEntryTime() == null) r.setEntryTime(LocalDateTime.now());
+        if (r.getCity() == null && entryStation != null) r.setCity(entryStation.getCity());
+        if (r.getLine() == null && entryStation != null) r.setLine(entryStation.getLine());
+
+        r.setExitTime(LocalDateTime.now());
+        r.setFare(fare);
+        r.setStatus("COMPLETED");
+        travelRecordRepository.save(r);
+    }
+
+    private Integer parseStationSequence(String location) {
+        if (location == null) return null;
+        String s = location.trim();
+        if (s.isEmpty()) return null;
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Optional<DiscountPolicy> findBestPolicy(String line, LocalDateTime now) {
+        List<DiscountPolicy> candidates = discountPolicyRepository.findByEnabledTrue();
+        DiscountPolicy best = null;
+        for (DiscountPolicy p : candidates) {
+            if (p == null) continue;
+            if (p.getDiscountRate() == null) continue;
+            if (!isPolicyInTimeWindow(p, now)) continue;
+            if (!isPolicyApplicableToLine(p, line)) continue;
+            if (best == null || p.getDiscountRate().compareTo(best.getDiscountRate()) < 0) {
+                best = p;
+            }
+        }
+        return Optional.ofNullable(best);
+    }
+
+    private boolean isPolicyInTimeWindow(DiscountPolicy p, LocalDateTime now) {
+        if (now == null) return true;
+        if (p.getStartTime() != null && now.isBefore(p.getStartTime())) return false;
+        if (p.getEndTime() != null && now.isAfter(p.getEndTime())) return false;
+        return true;
+    }
+
+    private boolean isPolicyApplicableToLine(DiscountPolicy p, String line) {
+        if (line == null || line.isBlank()) return true;
+        String lines = p.getApplicableLines();
+        if (lines == null || lines.isBlank()) return true;
+        return lines.contains(line);
     }
 
     private GateEvent createErrorEvent(String gateCode, String qrCode, String errorCode, String errorMessage) {

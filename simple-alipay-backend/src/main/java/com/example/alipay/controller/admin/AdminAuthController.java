@@ -4,6 +4,7 @@ import com.example.alipay.model.admin.AdminUser;
 import com.example.alipay.model.admin.CreateAdminRequest;
 import com.example.alipay.security.fintech.JwtUtil;
 import com.example.alipay.service.admin.AdminAuthService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -24,8 +25,15 @@ public class AdminAuthController {
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> request) {
-        String username = request.get("username");
-        String password = request.get("password");
+        return loginInternal(request.get("username"), request.get("password"));
+    }
+
+    @PostMapping(value = "/login", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public ResponseEntity<?> loginForm(@RequestParam Map<String, String> request) {
+        return loginInternal(request.get("username"), request.get("password"));
+    }
+
+    private ResponseEntity<?> loginInternal(String username, String password) {
 
         if (username == null || password == null) {
             return ResponseEntity.badRequest().body(Map.of("error", "用户名和密码不能为空"));

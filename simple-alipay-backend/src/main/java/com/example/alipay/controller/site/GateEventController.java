@@ -24,7 +24,8 @@ public class GateEventController {
             return ResponseEntity.badRequest().body(Map.of("error", "二维码不能为空"));
         }
 
-        GateEvent event = gateEventService.processEntry(gateCode, qrCode);
+        Long stationId = parseStationId(request.get("stationId"));
+        GateEvent event = gateEventService.processEntry(gateCode, qrCode, stationId);
         
         if ("SUCCESS".equals(event.getStatus())) {
             return ResponseEntity.ok(Map.of(
@@ -50,7 +51,8 @@ public class GateEventController {
             return ResponseEntity.badRequest().body(Map.of("error", "二维码不能为空"));
         }
 
-        GateEvent event = gateEventService.processExit(gateCode, qrCode);
+        Long stationId = parseStationId(request.get("stationId"));
+        GateEvent event = gateEventService.processExit(gateCode, qrCode, stationId);
         
         if ("SUCCESS".equals(event.getStatus())) {
             return ResponseEntity.ok(Map.of(
@@ -93,5 +95,14 @@ public class GateEventController {
     public ResponseEntity<?> getEventById(@PathVariable Long eventId) {
         // 这里需要添加获取单个事件的方法
         return ResponseEntity.ok(Map.of("message", "获取事件详情功能待实现"));
+    }
+
+    private Long parseStationId(String stationId) {
+        if (stationId == null || stationId.isBlank()) return null;
+        try {
+            return Long.parseLong(stationId.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

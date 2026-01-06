@@ -11,4 +11,7 @@ public interface GateEventRepository extends JpaRepository<GateEvent, Long> {
     List<GateEvent> findByEventTypeOrderByEventTimeDesc(String eventType);
     List<GateEvent> findByStatusOrderByEventTimeDesc(String status);
     Optional<GateEvent> findByTransactionId(String transactionId);
+
+    Optional<GateEvent> findTopByUserIdAndEventTypeAndStatusOrderByEventTimeDesc(Long userId, String eventType, String status);
+    long countByGateId(Long gateId);
 }

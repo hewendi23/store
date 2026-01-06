@@ -31,8 +31,8 @@ public class DiscountPolicyService {
     }
 
     public DiscountPolicy createPolicy(DiscountPolicy policy) {
-        if (!isValidUserType(policy.getApplicableUserType())) {
-            throw new IllegalArgumentException("invalid applicableUserType");
+        if (policy.getApplicableUserType() != null && policy.getApplicableUserType().isBlank()) {
+            policy.setApplicableUserType(null);
         }
         if (policy.getApplicableLines() != null) {
             policy.setApplicableLines(policy.getApplicableLines().trim());
@@ -51,11 +51,12 @@ public class DiscountPolicyService {
             policy.setPolicyName(policyDetails.getPolicyName());
             policy.setDescription(policyDetails.getDescription());
             policy.setDiscountRate(policyDetails.getDiscountRate());
-            if (!isValidUserType(policyDetails.getApplicableUserType())) {
-                throw new IllegalArgumentException("invalid applicableUserType");
-            }
-            policy.setApplicableUserType(policyDetails.getApplicableUserType());
-            policy.setApplicableLines(policyDetails.getApplicableLines());
+            policy.setApplicableUserType(
+                    policyDetails.getApplicableUserType() != null && policyDetails.getApplicableUserType().isBlank()
+                            ? null
+                            : policyDetails.getApplicableUserType()
+            );
+            policy.setApplicableLines(policyDetails.getApplicableLines() != null ? policyDetails.getApplicableLines().trim() : null);
             policy.setStartTime(policyDetails.getStartTime());
             policy.setEndTime(policyDetails.getEndTime());
             policy.setEnabled(policyDetails.isEnabled());
@@ -66,12 +67,6 @@ public class DiscountPolicyService {
         }
         adminOperationLogger.log("POLICY_UPDATE", "POLICY", policyId, "update policy", false, "policy not found");
         return null;
-    }
-
-    private boolean isValidUserType(String type) {
-        if (type == null) return false;
-        String t = type.trim();
-        return t.equals("GENERAL") || t.equals("STUDENT") || t.equals("ELDERLY") || t.equals("DISABLED");
     }
 
     public boolean enablePolicy(Long policyId) {
